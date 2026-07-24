@@ -304,7 +304,11 @@ defmodule FueltruckWeb.DashboardComponents do
         <%= for {arg, i} <- Enum.with_index(@args) do %>
           <%= case mod_flag(arg) do %>
             <% {flag, paths} -> %>
-              <details class="rounded border border-base-300 bg-base-100/60">
+              <details
+                id={"#{@id}-flag-#{i}"}
+                phx-hook="DetailsKeep"
+                class="rounded border border-base-300 bg-base-100/60"
+              >
                 <summary class="flex cursor-pointer items-center gap-2 px-2 py-1 text-[11px] font-medium">
                   <span class="font-mono text-primary">{flag}=</span>
                   <span class="text-base-content/50">{length(paths)} mod(s)</span>

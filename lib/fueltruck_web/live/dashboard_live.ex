@@ -170,7 +170,7 @@ defmodule FueltruckWeb.DashboardLive do
             {(@active_deploy && @active_deploy.name) || "None running"}
           </div>
         </div>
-        <.status_badge state={phase_state(@status.phase)} />
+        <.status_badge state={phase_state(@status.phase)} ready={@status.phase == :running} />
       </div>
 
       <div class="flex items-center gap-2">

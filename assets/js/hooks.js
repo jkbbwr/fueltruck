@@ -133,4 +133,16 @@ const ScrollBottom = {
   },
 }
 
-export default {LogStream, Copy, ScrollBottom}
+// Preserve a <details> element's open/closed state across LiveView patches.
+// `open` is a runtime DOM property, not in the server-rendered HTML, so morphdom
+// resets it on every re-render (the deploy page re-renders on each proc-status tick).
+const DetailsKeep = {
+  beforeUpdate() {
+    this.wasOpen = this.el.open
+  },
+  updated() {
+    this.el.open = this.wasOpen
+  },
+}
+
+export default {LogStream, Copy, ScrollBottom, DetailsKeep}
