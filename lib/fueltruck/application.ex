@@ -4,10 +4,12 @@ defmodule Fueltruck.Application do
   @moduledoc false
 
   use Application
+  require Logger
 
   @impl true
   def start(_type, _args) do
     Fueltruck.Storage.ensure_layout!()
+    discord_ready? = maybe_start_nostrum()
 
     children = [
       FueltruckWeb.Telemetry,
@@ -27,16 +29,45 @@ defmodule Fueltruck.Application do
       Fueltruck.Arma.Orchestrator,
       # Downloads + metrics
       Fueltruck.Downloads.Queue,
-      Fueltruck.Metrics.Sampler,
-      # Serve requests (typically last)
-      FueltruckWeb.Endpoint
+      Fueltruck.Metrics.Sampler
     ]
+
+    # Discord (optional): nostrum is already started by maybe_start_nostrum/0 (with
+    # num_shards: :manual, so it's booted but not connected). Our supervisor adds the
+    # dispatcher + consumer + notifier and opens the gateway. Endpoint stays last so
+    # requests are served after everything.
+    children = children ++ discord_children(discord_ready?) ++ [FueltruckWeb.Endpoint]
 
     # See https://elixir.hexdocs.pm/Supervisor.html
     # for other strategies and supported options
     opts = [strategy: :one_for_one, name: Fueltruck.Supervisor]
     Supervisor.start_link(children, opts)
   end
+
+  # nostrum is `runtime: false` (no auto-start). When Discord is enabled, bring it and
+  # its deps (gun, etc.) up via ensure_all_started. A failure here (e.g. a bad
+  # DISCORD_TOKEN) is logged and Discord is skipped — it must not take down the server,
+  # which manages Arma regardless. Returns whether Discord may start.
+  defp maybe_start_nostrum do
+    if Application.get_env(:fueltruck, :discord_enabled, false) do
+      case Application.ensure_all_started(:nostrum) do
+        {:ok, _apps} ->
+          true
+
+        {:error, reason} ->
+          Logger.error(
+            "Discord is enabled but Nostrum failed to start (check DISCORD_TOKEN): #{inspect(reason)}"
+          )
+
+          false
+      end
+    else
+      false
+    end
+  end
+
+  defp discord_children(true), do: [Fueltruck.Discord]
+  defp discord_children(false), do: []
 
   # Tell Phoenix to update the endpoint configuration
   # whenever the application is updated.

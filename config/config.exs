@@ -83,6 +83,17 @@ config :logger, :default_formatter,
 # Use Jason for JSON parsing in Phoenix
 config :phoenix, :json_library, Jason
 
+# Discord (Nostrum) — static config. The token and enable flag are runtime-only
+# (config/runtime.exs). `num_shards: :manual` means starting Nostrum does NOT open a
+# gateway connection; we call `Nostrum.Shard.Supervisor.connect/2` ourselves once our
+# consumer is ready. Voice tooling is disabled to silence ffmpeg/youtube-dl warnings.
+config :nostrum,
+  gateway_intents: [:guilds],
+  num_shards: :manual,
+  ffmpeg: false,
+  youtubedl: false,
+  streamlink: false
+
 # Import environment specific config. This must remain at the bottom
 # of this file so it overrides the configuration defined above.
 import_config "#{config_env()}.exs"

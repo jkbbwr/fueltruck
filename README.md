@@ -42,9 +42,22 @@ Point `config :fueltruck, Fueltruck.Arma, server_binary: …` at it to click aro
 | `DATABASE_PATH` | SQLite database file | — (required in prod) |
 | `STEAMREE_BIN` | Path to the `steamree` executable | `steamree` |
 | `SECRET_KEY_BASE` | Phoenix secret | — (required in prod) |
+| `DISCORD_ENABLED` | Set to `true` to boot the Discord bot | off |
+| `DISCORD_TOKEN` | Bot token (required when enabled) | — |
+| `DISCORD_GUILD_ID` | Register slash commands to one guild (instant); omit for global | — |
+| `DISCORD_CHANNEL_ID` | Channel for lifecycle/download notifications | — |
 
 steamree integration lives in `Fueltruck.Downloads.Steamree` — adjust the argv there
 (or via `:steamree_extra_args`) when wiring up the real binary.
+
+### Discord
+
+Optional integration (Nostrum + Nosedrum). It stays completely dormant unless
+`DISCORD_ENABLED=true` — Nostrum is `runtime: false`, so nothing connects (or even needs
+a token) when disabled. When enabled it registers slash commands `/status`, `/deploys`,
+`/start <deploy>`, `/stop`, `/restart`, and posts server up/down/crash and download
+events to `DISCORD_CHANNEL_ID`. Restrict the control commands via Discord's built-in
+command permissions. Lives under `Fueltruck.Discord`.
 
 ## Container
 

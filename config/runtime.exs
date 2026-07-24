@@ -28,6 +28,27 @@ if data_dir = System.get_env("FUELTRUCK_DATA_DIR") do
   config :fueltruck, Fueltruck.Storage, data_dir: data_dir
 end
 
+# Discord integration — only active when DISCORD_ENABLED=true. nostrum doesn't
+# auto-start (runtime: false), so when disabled no token is needed and it never runs.
+# When enabled, DISCORD_TOKEN is required; DISCORD_GUILD_ID scopes slash commands to one
+# server (instant updates); DISCORD_CHANNEL_ID receives lifecycle notifications.
+discord_enabled? = System.get_env("DISCORD_ENABLED") == "true"
+config :fueltruck, :discord_enabled, discord_enabled?
+
+if discord_enabled? do
+  parse_id = fn
+    nil -> nil
+    "" -> nil
+    v -> String.to_integer(v)
+  end
+
+  config :nostrum, token: System.fetch_env!("DISCORD_TOKEN")
+
+  config :fueltruck, Fueltruck.Discord,
+    guild_id: parse_id.(System.get_env("DISCORD_GUILD_ID")),
+    notify_channel_id: parse_id.(System.get_env("DISCORD_CHANNEL_ID"))
+end
+
 if steamree = System.get_env("STEAMREE_BIN") do
   config :fueltruck, Fueltruck.Downloads, steamree_bin: steamree
 end

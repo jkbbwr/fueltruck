@@ -11,7 +11,19 @@ defmodule Fueltruck.MixProject do
       aliases: aliases(),
       deps: deps(),
       compilers: [:phoenix_live_view] ++ Mix.compilers(),
-      listeners: [Phoenix.CodeReloader]
+      listeners: [Phoenix.CodeReloader],
+      releases: releases()
+    ]
+  end
+
+  # The Discord deps are `runtime: false` so they don't auto-start (nostrum would
+  # authenticate at boot). `:load` forces them — and their runtime deps like gun — into
+  # the release, loaded but not started; we start nostrum ourselves when DISCORD_ENABLED.
+  defp releases do
+    [
+      fueltruck: [
+        applications: [nostrum: :load, nosedrum: :load]
+      ]
     ]
   end
 
@@ -74,7 +86,18 @@ defmodule Fueltruck.MixProject do
       {:gettext, "~> 1.0"},
       {:jason, "~> 1.2"},
       {:dns_cluster, "~> 0.2.0"},
-      {:bandit, "~> 1.5"}
+      {:bandit, "~> 1.5"},
+      # Discord integration (optional, gated behind DISCORD_ENABLED). nosedrum's hex
+      # release pins nostrum ~> 0.8; only its master branch supports nostrum 0.10.
+      # Discord integration (optional, gated behind DISCORD_ENABLED). nostrum's
+      # Shard.Supervisor authenticates to Discord at boot, so letting it auto-start
+      # would crash the VM without valid creds. nosedrum (a no-`mod:` library) lists
+      # nostrum in its own `applications`, so BOTH must be runtime: false to break the
+      # auto-start cascade; we start nostrum ourselves only when DISCORD_ENABLED (see
+      # Fueltruck.Application) and their modules stay on the code path for direct use.
+      # nosedrum's hex release pins nostrum ~> 0.8; only its master branch supports 0.10.
+      {:nostrum, "~> 0.10", runtime: false, override: true},
+      {:nosedrum, github: "jchristgit/nosedrum", runtime: false}
     ]
   end
 
