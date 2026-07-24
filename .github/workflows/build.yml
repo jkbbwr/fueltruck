@@ -75,6 +75,11 @@ jobs:
           context: .
           push: true
           platforms: linux/amd64
+          # Push a plain single-platform image manifest. Without these, v6 attaches
+          # provenance/SBOM attestations, producing an OCI index with an "unknown/unknown"
+          # entry that GHCR shows as a build artifact rather than a runnable image.
+          provenance: false
+          sbom: false
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
