@@ -118,4 +118,19 @@ const Copy = {
   },
 }
 
-export default {LogStream, Copy}
+// ScrollBottom: keep an element pinned to the bottom as its content grows, unless the
+// user has scrolled up. Captures pin state before the patch so a mid-update content
+// change doesn't lose it.
+const ScrollBottom = {
+  mounted() {
+    this.el.scrollTop = this.el.scrollHeight
+  },
+  beforeUpdate() {
+    this.pinned = this.el.scrollHeight - this.el.scrollTop - this.el.clientHeight < 60
+  },
+  updated() {
+    if (this.pinned) this.el.scrollTop = this.el.scrollHeight
+  },
+}
+
+export default {LogStream, Copy, ScrollBottom}

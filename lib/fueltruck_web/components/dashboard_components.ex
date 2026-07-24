@@ -29,6 +29,32 @@ defmodule FueltruckWeb.DashboardComponents do
     """
   end
 
+  @doc "A dismissable error modal that stays until closed (button or Escape)."
+  attr :title, :string, default: "Something went wrong"
+  attr :message, :string, required: true
+  attr :on_dismiss, :string, default: "dismiss_error"
+
+  def error_modal(assigns) do
+    ~H"""
+    <div
+      class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+      phx-window-keydown={@on_dismiss}
+      phx-key="Escape"
+    >
+      <div class="w-full max-w-lg rounded-2xl border border-error/40 bg-base-100 p-6 shadow-xl">
+        <div class="mb-3 flex items-center gap-2 text-error">
+          <.icon name="hero-exclamation-triangle" class="size-6" />
+          <h2 class="text-lg font-bold">{@title}</h2>
+        </div>
+        <pre class="max-h-64 overflow-auto whitespace-pre-wrap rounded-lg border border-base-300 bg-base-200 p-3 text-xs leading-relaxed text-base-content/80">{@message}</pre>
+        <div class="mt-4 flex justify-end">
+          <button type="button" phx-click={@on_dismiss} class="ft-btn-primary">Dismiss</button>
+        </div>
+      </div>
+    </div>
+    """
+  end
+
   @doc "A button-styled tab bar. `tabs` is a list of `{key, label, icon}`."
   attr :tabs, :list, required: true
   attr :active, :string, required: true
@@ -315,6 +341,106 @@ defmodule FueltruckWeb.DashboardComponents do
   defp split_paths(value), do: String.split(value, ";", trim: true)
 
   defp command_string(exe, args), do: Enum.join([exe | args], " ")
+
+  @doc """
+  Renders a download snapshot: an overall byte-progress bar (summed across depots for
+  the server, or items for mods) plus smooth per-mod bars driven by steamree's throttled
+  `depot_progress`/`item_progress` events. Unknown totals fall back to an indeterminate
+  bar.
+  """
+  attr :download, :map, required: true
+
+  def download_progress(assigns) do
+    ~H"""
+    <div class="space-y-3">
+      <div>
+        <div class="mb-1 flex items-center justify-between text-sm">
+          <span class="truncate font-medium">{overall_title(@download)}</span>
+          <span class="text-xs tabular-nums text-base-content/50">{overall_label(@download)}</span>
+        </div>
+        <div class="ft-bar">
+          <div
+            :if={@download.bytes_pct}
+            class="ft-bar-fill ft-bar-active"
+            style={"width: #{@download.bytes_pct}%"}
+          />
+          <div
+            :if={!@download.bytes_pct && @download.pct}
+            class="ft-bar-fill ft-bar-done"
+            style={"width: #{@download.pct}%"}
+          />
+          <div
+            :if={!@download.bytes_pct && !@download.pct}
+            class={["ft-bar-fill", phase_bar_class(@download.phase)]}
+          />
+        </div>
+        <div class="mt-1 text-xs text-base-content/50">
+          {phase_label(@download.phase)}<span :if={(@download[:depots] || 0) > 0}> · {@download.depots} depots</span>
+        </div>
+      </div>
+
+      <div :if={@download.items != []} class="space-y-2 border-t border-base-200 pt-3">
+        <div :for={item <- @download.items}>
+          <div class="flex items-center justify-between text-sm">
+            <span class="truncate">{item.name}</span>
+            <span class="text-xs tabular-nums text-base-content/50">{item_label(item)}</span>
+          </div>
+          <div class="ft-bar mt-0.5">
+            <div class={["ft-bar-fill", item_bar_class(item)]} style={item_bar_style(item)} />
+          </div>
+        </div>
+      </div>
+    </div>
+    """
+  end
+
+  defp overall_title(%{kind: :server, server: s}) when is_map(s),
+    do: "#{s[:name] || "Server"} (#{s[:branch]})"
+
+  defp overall_title(%{kind: :server}), do: "Server"
+  defp overall_title(d), do: "#{d.done} / #{d.total} mods"
+
+  defp overall_label(%{bytes_pct: p} = d) when is_integer(p),
+    do: "#{humanize_bytes(d.bytes_done)} / #{humanize_bytes(d.total_bytes)} · #{p}%"
+
+  defp overall_label(%{pct: p}) when is_integer(p), do: "#{p}%"
+  defp overall_label(_), do: ""
+
+  defp phase_bar_class(:done), do: "ft-bar-done"
+  defp phase_bar_class(nil), do: "ft-bar-queued"
+  defp phase_bar_class(_), do: "ft-bar-indeterminate"
+
+  defp item_bar_class(%{status: "done"}), do: "ft-bar-done"
+  defp item_bar_class(%{status: s}) when s in ["failed", "unavailable"], do: "ft-bar-failed"
+  defp item_bar_class(%{total_bytes: t}) when is_integer(t) and t > 0, do: "ft-bar-active"
+  defp item_bar_class(%{status: "downloading"}), do: "ft-bar-indeterminate"
+  defp item_bar_class(_), do: "ft-bar-queued"
+
+  defp item_bar_style(%{status: s}) when s in ["done", "failed", "unavailable"], do: nil
+
+  defp item_bar_style(%{completed_bytes: c, total_bytes: t}) when is_integer(t) and t > 0,
+    do: "width: #{min(100, round(c / t * 100))}%"
+
+  defp item_bar_style(_), do: nil
+
+  defp item_label(%{status: "done", total_bytes: t}) when is_integer(t) and t > 0,
+    do: humanize_bytes(t)
+
+  defp item_label(%{status: "done"}), do: "done"
+
+  defp item_label(%{status: "downloading", completed_bytes: c, total_bytes: t})
+       when is_integer(t) and t > 0,
+       do: "#{humanize_bytes(c)} / #{humanize_bytes(t)}"
+
+  defp item_label(%{status: "downloading"}), do: "downloading…"
+  defp item_label(%{status: "failed"}), do: "failed"
+  defp item_label(%{status: "unavailable"}), do: "unavailable"
+  defp item_label(_), do: "queued"
+
+  defp phase_label(:resolving), do: "Resolving depots…"
+  defp phase_label(:downloading), do: "Downloading…"
+  defp phase_label(:done), do: "Complete"
+  defp phase_label(_), do: "Starting…"
 
   ## Formatting helpers
 

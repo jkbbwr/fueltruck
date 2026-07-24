@@ -12,6 +12,7 @@ defmodule FueltruckWeb.DeploysLive do
     {:ok,
      socket
      |> assign(:active, :deploys)
+     |> assign(:start_error, nil)
      |> load_deploys()}
   end
 
@@ -52,14 +53,16 @@ defmodule FueltruckWeb.DeploysLive do
   def handle_event("start", %{"id" => id}, socket) do
     deploy = Deploys.get_deploy!(id)
 
-    socket =
-      case Arma.start_deploy(deploy) do
-        :ok -> socket |> put_flash(:info, "Starting #{deploy.name}…") |> push_navigate(to: ~p"/")
-        {:error, reason} -> put_flash(socket, :error, "Start failed: #{inspect(reason)}")
-      end
+    case safe_start_deploy(deploy) do
+      :ok ->
+        {:noreply, socket |> put_flash(:info, "Starting #{deploy.name}…") |> push_navigate(to: ~p"/")}
 
-    {:noreply, socket}
+      {:error, reason} ->
+        {:noreply, assign(socket, :start_error, Arma.format_error(reason))}
+    end
   end
+
+  def handle_event("dismiss_error", _p, socket), do: {:noreply, assign(socket, :start_error, nil)}
 
   def handle_event("delete", %{"id" => id}, socket) do
     deploy = Deploys.get_deploy!(id)
@@ -76,6 +79,7 @@ defmodule FueltruckWeb.DeploysLive do
   def render(assigns) do
     ~H"""
     <Layouts.app flash={@flash} active={@active}>
+      <.error_modal :if={@start_error} title="Couldn't start deploy" message={@start_error} />
       <div class="space-y-5">
         <div class="flex items-center justify-between">
           <div>
@@ -198,6 +202,12 @@ defmodule FueltruckWeb.DeploysLive do
       </div>
     </div>
     """
+  end
+
+  defp safe_start_deploy(deploy) do
+    Arma.start_deploy(deploy)
+  catch
+    :exit, reason -> {:error, {:exit, reason}}
   end
 
   defp load_deploys(socket), do: assign(socket, :deploys, Deploys.list_deploys_with_counts())

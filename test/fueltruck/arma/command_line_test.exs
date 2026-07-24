@@ -48,7 +48,7 @@ defmodule Fueltruck.Arma.CommandLineTest do
 
     assert "-client" in args
     assert "-connect=127.0.0.1" in args
-    assert "-name=hc_2" in args
+    assert "-name=fueltruck_hc2" in args
     assert "-password=secret" in args
     assert Enum.find(args, &String.starts_with?(&1, "-mod=")) =~ "@cba"
     # HCs never load server-only mods.

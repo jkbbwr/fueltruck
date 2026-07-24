@@ -2,15 +2,15 @@ defmodule Fueltruck.Profiles do
   @moduledoc """
   Manages a deploy's Arma 3 profile files.
 
-  On Linux the dedicated server ignores `-profiles` and writes the profile to a folder
-  named after `-name` under the install dir (the process cwd), e.g. with `-name=server`
-  → `<install>/server/server.armaprofile`. Fueltruck sets `-name` to the deploy slug,
-  so each deploy gets its own folder there. The relevant files:
+  We pass `-profiles=<deploy_dir>/profiles`, which redirects Arma's profile/save tree
+  under the deploy dir instead of the user's home. Verified layout (with `-name=antistasi`):
+  `<deploy_dir>/profiles/home/antistasi/antistasi.Arma3Profile`. `-name` is the deploy
+  slug (see `Storage.profile_dir/2`). The relevant files:
 
-    * `<name>.armaprofile` (a.k.a. `<name>.Arma3Profile`) — profile config
-    * `<name>.vars.armaprofile` — persistent variables (mission save state)
+    * `<name>.Arma3Profile` (a.k.a. `<name>.armaprofile`) — profile config
+    * `<name>.vars.Arma3Profile` — persistent variables (mission save state)
 
-  Extensions and any `Users/` nesting vary by platform, so **reads glob** the profile
+  Extensions and casing still vary by platform/version, so **reads glob** the profile
   dir and match profile files case-insensitively. Uploads are written into the same
   dir, keyed to the deploy name, preserving the uploaded file's extension.
   """
@@ -23,8 +23,10 @@ defmodule Fueltruck.Profiles do
   @profile_re ~r/\.(vars\.)?arma3?profile$/i
   @vars_re ~r/\.vars\./i
 
-  @doc "Directory Arma writes this deploy's profile into (`<install>/<name>`)."
-  def profiles_dir(%Deploy{} = deploy), do: Storage.profile_dir(deploy.profile_name)
+  @doc "Directory Arma writes this deploy's profile into (`<deploy_dir>/profiles/home/<name>`)."
+  def profiles_dir(%Deploy{} = deploy) do
+    Storage.profile_dir(deploy.slug, deploy.profile_name)
+  end
 
   @doc "Expected filename for a kind (based on the profile name)."
   def filename(%Deploy{} = deploy, :main), do: "#{deploy.profile_name}.Arma3Profile"

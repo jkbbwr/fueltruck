@@ -20,7 +20,15 @@ defmodule Fueltruck.Storage do
 
   @doc "Arma dedicated server install directory (steamree downloads here)."
   @spec server_dir() :: Path.t()
-  def server_dir, do: Path.join(data_dir(), "server")
+  def server_dir, do: Path.join(steam_root(), Integer.to_string(server_app_id()))
+
+  @doc """
+  Steam content root passed to steamree as `-o`. steamree writes app content to
+  `<root>/<appid>` and workshop items to `<root>/<appid>/<pubfileid>`, so this is the
+  parent of both the server install and the workshop store.
+  """
+  @spec steam_root() :: Path.t()
+  def steam_root, do: Path.join(data_dir(), "steam")
 
   @doc "Absolute path to the server executable."
   @spec server_binary() :: Path.t()
@@ -30,12 +38,47 @@ defmodule Fueltruck.Storage do
     if Path.type(bin) == :absolute, do: bin, else: Path.join(server_dir(), bin)
   end
 
-  @doc "Root of the shared workshop mod store."
-  @spec workshop_dir() :: Path.t()
-  def workshop_dir do
-    app_id = Application.fetch_env!(:fueltruck, Fueltruck.Arma)[:workshop_app_id]
-    Path.join([data_dir(), "workshop", Integer.to_string(app_id)])
+  @doc """
+  Writable HOME for the Arma processes. The base image runs as `nobody` with
+  `HOME=/nonexistent`, but Arma's Steam integration `dlopen`s
+  `$HOME/.steam/sdk64/steamclient.so` on boot — with no readable HOME it fails
+  SteamAPI init and then segfaults (exit 139). Point HOME at a writable dir on the
+  data volume instead.
+  """
+  @spec steam_home() :: Path.t()
+  def steam_home, do: Path.join(data_dir(), "home")
+
+  @doc """
+  Ensure the Steam SDK layout Arma expects exists under `steam_home/.steam`.
+  Symlinks the `steamclient.so` shipped in the server install into `sdk64` (and
+  `sdk32`, harmlessly) so SteamAPI init succeeds without a steamcmd login or any
+  Steam credentials at runtime. Idempotent; a no-op if the server isn't downloaded.
+  """
+  @spec ensure_steam_sdk!() :: :ok
+  def ensure_steam_sdk! do
+    src =
+      [Path.join(server_dir(), "linux64/steamclient.so"), Path.join(server_dir(), "steamclient.so")]
+      |> Enum.find(&File.regular?/1)
+
+    if src do
+      for sdk <- ["sdk64", "sdk32"] do
+        dir = Path.join([steam_home(), ".steam", sdk])
+        File.mkdir_p!(dir)
+        link = Path.join(dir, "steamclient.so")
+        File.rm(link)
+        File.ln_s(src, link)
+      end
+    end
+
+    :ok
   end
+
+  @doc "Root of the shared workshop mod store (`<steam_root>/<workshop_app_id>`)."
+  @spec workshop_dir() :: Path.t()
+  def workshop_dir, do: Path.join(steam_root(), Integer.to_string(workshop_app_id()))
+
+  defp server_app_id, do: Application.fetch_env!(:fueltruck, Fueltruck.Arma)[:server_app_id]
+  defp workshop_app_id, do: Application.fetch_env!(:fueltruck, Fueltruck.Arma)[:workshop_app_id]
 
   @doc "Store directory for a single workshop mod (by its numeric id)."
   @spec mod_store_dir(String.t() | integer()) :: Path.t()
@@ -50,13 +93,28 @@ defmodule Fueltruck.Storage do
   def deploy_dir(slug), do: Path.join(deploys_dir(), slug)
 
   @doc """
-  Profile directory Arma writes to, keyed by the `-name` value: `<install>/<name>/`.
-  On Linux `-profiles` is effectively ignored and the profile lands under the server
-  install dir (the process cwd), so this is rooted there. Unique per-deploy `-name`
-  (the slug) keeps deploys isolated. Holds `<name>.armaprofile` / var.profiles.
+  A deploy's `-profiles=` root: `<deploy_dir>/profiles`. Passing `-profiles` redirects
+  Arma's whole profile/save tree here instead of the user's XDG home, so each deploy's
+  profile sits next to its config/mods/keys (and inside its backups) rather than in some
+  opaque home directory. Survives re-materialize (only `mods/` and `keys/` are rebuilt).
   """
-  @spec profile_dir(String.t()) :: Path.t()
-  def profile_dir(name), do: Path.join(server_dir(), to_string(name))
+  @spec profiles_root(String.t()) :: Path.t()
+  def profiles_root(slug), do: Path.join(deploy_dir(slug), "profiles")
+
+  @doc """
+  Concrete directory Arma writes a given `-name`'s profile files into, under a deploy's
+  `-profiles` root. Verified layout on Linux (this server version):
+
+      <deploy_dir>/profiles/home/<name>/<name>.Arma3Profile
+                                        /<name>.vars.Arma3Profile
+
+  Keyed by `-name`, so the server (`profile_name`) and each HC (`<name>_hcN`) get their
+  own folder here.
+  """
+  @spec profile_dir(String.t(), String.t()) :: Path.t()
+  def profile_dir(slug, name) do
+    Path.join([profiles_root(slug), "home", to_string(name)])
+  end
 
   @doc "Directory holding collected BattlEye `.bikey` files for a deploy."
   @spec keys_dir(String.t()) :: Path.t()

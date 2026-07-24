@@ -28,13 +28,14 @@ defmodule Fueltruck.Arma.CommandLine do
   def server(%Deploy{} = deploy, mod_paths, server_mod_paths) do
     slug = deploy.slug
 
-    # `-name` determines the profile folder Arma creates under the install dir; there
-    # is no `-profiles` (it's a no-op on Linux and the default = cwd = install dir).
+    # `-profiles` redirects the profile/save tree under the deploy dir (verified working
+    # on Linux); `-name` selects the profile folder within it (`<root>/home/<name>/`).
     args =
       [
         "-port=#{deploy.port}",
         "-config=#{rel(Path.join(Storage.deploy_dir(slug), "server.cfg"))}",
         "-cfg=#{rel(Path.join(Storage.deploy_dir(slug), "basic.cfg"))}",
+        "-profiles=#{rel(Storage.profiles_root(slug))}",
         "-name=#{deploy.profile_name}"
       ]
       |> maybe_mods("-mod", cdlc_keys(deploy) ++ rel_all(mod_paths))
@@ -68,12 +69,22 @@ defmodule Fueltruck.Arma.CommandLine do
         "-port=#{deploy.port}"
       ]
       |> maybe_password(password)
-      |> Kernel.++(["-name=hc_#{n}"])
+      |> Kernel.++([
+        "-profiles=#{rel(Storage.profiles_root(deploy.slug))}",
+        "-name=#{hc_profile_name(deploy, n)}"
+      ])
       |> maybe_mods("-mod", cdlc_keys(deploy) ++ rel_all(mod_paths))
       |> Kernel.++(tokenize(deploy.extra_hc_args))
 
     {Storage.server_binary(), args}
   end
+
+  @doc """
+  Profile name (`-name`) for headless client `n`, scoped to the deploy so each HC gets
+  its own profile folder and two deploys never share one: `<profile_name>_hc<n>`.
+  """
+  @spec hc_profile_name(Deploy.t(), non_neg_integer()) :: String.t()
+  def hc_profile_name(%Deploy{} = deploy, n), do: "#{deploy.profile_name}_hc#{n}"
 
   @doc "Render an argv as a copy-pasteable command line string."
   @spec to_string(argv()) :: String.t()
@@ -87,12 +98,13 @@ defmodule Fueltruck.Arma.CommandLine do
     args ++ ["#{flag}=#{Enum.join(paths, ";")}"]
   end
 
-  # Render a path relative to the Arma install dir (the process cwd). Arma resolves
-  # `-config`/`-cfg`/`-profiles`/`-mod` relative to cwd, so this keeps command lines
-  # short and portable instead of embedding absolute host paths.
+  # Deploy configs/mods live under /data/deploys, outside the install dir (the process
+  # cwd). Making them relative to the install dir yields `../../deploys/...`, and Arma
+  # mangles `..` in `-config`/`-cfg`/`-mod` paths (it drops the traversal and looks
+  # under cwd, so the file is "not found"). Absolute paths sidestep that entirely.
   defp rel_all(paths), do: Enum.map(paths, &rel/1)
 
-  defp rel(path), do: Path.relative_to(path, Storage.server_dir(), force: true)
+  defp rel(path), do: Path.expand(path)
 
   # Enabled Creator DLC folder keys (e.g. "gm", "vn"), loaded like client mods. Their
   # folders sit in the install dir, so the bare key is a valid relative `-mod` entry.

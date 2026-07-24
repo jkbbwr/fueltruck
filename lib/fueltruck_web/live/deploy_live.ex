@@ -25,6 +25,7 @@ defmodule FueltruckWeb.DeployLive do
      |> assign(:active, :deploys)
      |> assign(:tab, "settings")
      |> assign(:tabs, @tabs)
+     |> assign(:start_error, nil)
      |> allow_upload(:preset, accept: ~w(.html .htm), max_entries: 1, max_file_size: 5_000_000)
      |> allow_upload(:profiles, accept: :any, max_entries: 2, max_file_size: 20_000_000)
      |> allow_upload(:server_cfg, accept: :any, max_entries: 1, max_file_size: 2_000_000)
@@ -36,6 +37,12 @@ defmodule FueltruckWeb.DeployLive do
   @impl true
   def handle_info({:proc_status, _s, _st}, socket), do: {:noreply, reload(socket)}
   def handle_info({:downloads, snap}, socket), do: {:noreply, assign(socket, :download, snap)}
+
+  def handle_info({:download_done, info}, socket) do
+    {level, msg} = Downloads.done_message(info)
+    {:noreply, socket |> put_flash(level, msg) |> reload()}
+  end
+
   def handle_info(_msg, socket), do: {:noreply, socket}
 
   ## Tabs + validation
@@ -257,16 +264,19 @@ defmodule FueltruckWeb.DeployLive do
   end
 
   def handle_event("download_server", _params, socket) do
+    # The server download is the Creator DLC build (base + CDLC data) — one branch.
     Downloads.update_server()
     {:noreply, put_flash(socket, :info, "Queued server download/update")}
   end
 
   def handle_event("start", _params, socket) do
-    case Arma.start_deploy(socket.assigns.deploy) do
+    case safe_start_deploy(socket.assigns.deploy) do
       :ok -> {:noreply, socket |> put_flash(:info, "Starting…") |> push_navigate(to: ~p"/")}
-      {:error, r} -> {:noreply, put_flash(socket, :error, "Start failed: #{inspect(r)}")}
+      {:error, reason} -> {:noreply, assign(socket, :start_error, Arma.format_error(reason))}
     end
   end
+
+  def handle_event("dismiss_error", _p, socket), do: {:noreply, assign(socket, :start_error, nil)}
 
   def handle_event("delete", _params, socket) do
     deploy = socket.assigns.deploy
@@ -289,8 +299,18 @@ defmodule FueltruckWeb.DeployLive do
   def render(assigns) do
     ~H"""
     <Layouts.app flash={@flash} active={@active}>
+      <.error_modal :if={@start_error} title="Couldn't start deploy" message={@start_error} />
       <div class="space-y-5">
         <.deploy_header deploy={@deploy} count={length(@deploy_mods)} />
+
+        <.card
+          :if={@download.status == :running}
+          title={"Downloading — #{@download.label}"}
+          icon="hero-cloud-arrow-down"
+        >
+          <.download_progress download={@download} />
+        </.card>
+
         <.tab_bar tabs={@tabs} active={@tab} />
 
         <div class="grid gap-5 lg:grid-cols-3">
@@ -877,6 +897,13 @@ defmodule FueltruckWeb.DeployLive do
   end
 
   defp cdlc_all, do: CDLC.all()
+
+  # Never let a start failure crash the LiveView — surface it as {:error, reason}.
+  defp safe_start_deploy(deploy) do
+    Arma.start_deploy(deploy)
+  catch
+    :exit, reason -> {:error, {:exit, reason}}
+  end
 
   defp find_dm(socket, id), do: Enum.find(socket.assigns.deploy_mods, &(&1.id == id))
 

@@ -61,7 +61,7 @@ defmodule Fueltruck.Deploys.Materializer do
     File.mkdir_p!(deploy_dir)
     # Ensure the profile dir (under the install, keyed by -name) exists so uploads and
     # the first run have a home; it lives outside the deploy dir and is never wiped.
-    File.mkdir_p!(Storage.profile_dir(deploy.profile_name))
+    File.mkdir_p!(Storage.profiles_root(deploy.slug))
 
     # Rebuild mods + keys fresh to reflect the current selection.
     _ = File.rm_rf(mods_dir)

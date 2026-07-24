@@ -253,3 +253,43 @@
   background: color-mix(in oklch, var(--color-warning) 15%, transparent);
   color: var(--color-warning);
 }
+
+/* Progress bars */
+.ft-bar {
+  height: 6px;
+  border-radius: 9999px;
+  background: var(--color-base-200);
+  overflow: hidden;
+}
+.ft-bar-fill {
+  height: 100%;
+  border-radius: 9999px;
+  transition: width 0.3s ease;
+}
+.ft-bar-done {
+  background: var(--color-success);
+  width: 100%;
+}
+.ft-bar-active {
+  background: var(--color-primary);
+}
+.ft-bar-failed {
+  background: var(--color-error);
+  width: 100%;
+}
+.ft-bar-queued {
+  width: 0;
+}
+.ft-bar-indeterminate {
+  width: 35%;
+  background: var(--color-primary);
+  animation: ft-indeterminate 1.15s ease-in-out infinite;
+}
+@keyframes ft-indeterminate {
+  0% {
+    margin-left: -35%;
+  }
+  100% {
+    margin-left: 100%;
+  }
+}

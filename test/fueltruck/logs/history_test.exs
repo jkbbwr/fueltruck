@@ -4,30 +4,35 @@ defmodule Fueltruck.Logs.HistoryTest do
   alias Fueltruck.Logs
   alias Fueltruck.Logs.{Collector, History}
 
-  @source {:hc, 7}
-
   setup do
+    # Unique source + run dir per test so nothing (registry names, on-disk dirs, or the
+    # global line-count Index cache) can bleed between tests regardless of run order.
+    source = {:hc, System.unique_integer([:positive])}
     run_dir = Path.join(System.tmp_dir!(), "ft-hist-#{System.unique_integer([:positive])}")
+    # unique_integer restarts each run, so the tmp dir can be a leftover from a prior
+    # run (tmp isn't cleaned) — wipe it so the collector never appends to stale segments.
+    File.rm_rf!(run_dir)
 
     {:ok, pid} =
-      Logs.start_collector(@source, run_dir, max_segment_bytes: 200, flush_interval: 20)
+      Logs.start_collector(source, run_dir, max_segment_bytes: 200, flush_interval: 20)
 
-    on_exit(fn -> Logs.stop_collector(@source) end)
-    %{run_dir: run_dir, pid: pid}
+    on_exit(fn ->
+      Logs.stop_collector(source)
+      File.rm_rf(run_dir)
+    end)
+    %{source: source, run_dir: run_dir, pid: pid}
   end
 
-  test "reverse-scroll paging and search read from disk across segments", %{
-    run_dir: run_dir,
-    pid: pid
-  } do
+  test "reverse-scroll paging and search read from disk across segments", ctx do
+    %{run_dir: run_dir, pid: pid, source: source} = ctx
     # Enough lines to force multiple segments (200-byte segments).
     for i <- 1..100, do: Collector.append(pid, "line #{i}")
     # Stop the collector so buffered (delayed_write) segments are flushed + closed —
     # this is the "browse history after the run" path.
     _ = :sys.get_state(pid)
-    Logs.stop_collector(@source)
+    Logs.stop_collector(source)
 
-    dir = History.source_dir(run_dir, @source)
+    dir = History.source_dir(run_dir, source)
     assert History.total_lines(dir) == 100
     assert length(History.segments(dir)) > 1
 

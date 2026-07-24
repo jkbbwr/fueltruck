@@ -10,3 +10,6 @@ deps/
 .formatter.exs
 test/
 tmp/
+.env
+.env.*
+fetch.sh

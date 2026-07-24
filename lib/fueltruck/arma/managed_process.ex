@@ -18,7 +18,7 @@ defmodule Fueltruck.Arma.ManagedProcess do
   @behaviour :gen_statem
 
   require Logger
-  alias Fueltruck.{Arma, Logs}
+  alias Fueltruck.{Arma, Logs, Storage}
   alias Fueltruck.Arma.CommandLine
 
   @default_max_attempts 10
@@ -332,11 +332,14 @@ defmodule Fueltruck.Arma.ManagedProcess do
       cd: data.cwd,
       stderr_to_stdout: true,
       logger_fun: logger_fun,
+      # Arma boots Steam via $HOME/.steam/sdk64/steamclient.so; the base image's
+      # HOME=/nonexistent makes that fail and segfault, so point it at a writable dir.
+      env: [{"HOME", Storage.steam_home()}],
       # SIGTERM, then SIGKILL after a grace period so Arma can flush profiles.
       delay_to_sigkill: 5_000
     ]
 
-    if linux?() and data.cgroup_controllers != [] do
+    if linux?() and data.cgroup_controllers != [] and cgroups_writable?() do
       base ++
         [
           cgroup_controllers: data.cgroup_controllers,
@@ -344,6 +347,38 @@ defmodule Fueltruck.Arma.ManagedProcess do
         ]
     else
       base
+    end
+  end
+
+  # Containers don't get cgroup write access unless delegated, and MuonTrap's cgroup
+  # setup fails hard if the fs is read-only. Probe once and cache — if we can't create a
+  # cgroup, run without it (the process still gets muontrap's kill-on-exit guarantee;
+  # metrics fall back to ps).
+  defp cgroups_writable? do
+    case :persistent_term.get({__MODULE__, :cgroups_writable}, :unknown) do
+      :unknown ->
+        result = probe_cgroups()
+        :persistent_term.put({__MODULE__, :cgroups_writable}, result)
+        result
+
+      result ->
+        result
+    end
+  end
+
+  defp probe_cgroups do
+    probe = "/sys/fs/cgroup/.fueltruck_probe"
+
+    case File.mkdir(probe) do
+      :ok ->
+        File.rmdir(probe)
+        true
+
+      {:error, :eexist} ->
+        true
+
+      _ ->
+        false
     end
   end
 

@@ -5,13 +5,15 @@ defmodule Fueltruck.ProfilesTest do
 
   setup do
     {:ok, deploy} = Deploys.create_deploy(%{name: "Profile Test"})
-    on_exit(fn -> File.rm_rf(Storage.profile_dir(deploy.profile_name)) end)
+    on_exit(fn -> File.rm_rf(Storage.profiles_root(deploy.slug)) end)
     %{deploy: deploy}
   end
 
-  test "profile dir is rooted at the install and keyed by name", %{deploy: deploy} do
+  test "profile dir is under the deploy's -profiles root, keyed by name", %{deploy: deploy} do
     assert deploy.profile_name == "profile-test"
-    assert Profiles.profiles_dir(deploy) == Path.join(Storage.server_dir(), "profile-test")
+
+    assert Profiles.profiles_dir(deploy) ==
+             Path.join([Storage.profiles_root(deploy.slug), "home", "profile-test"])
   end
 
   test "uploads are stored and then found by kind, regardless of source name", %{deploy: deploy} do

@@ -3,22 +3,32 @@ defmodule Fueltruck.Downloads.EventTest do
 
   alias Fueltruck.Downloads.Event
 
-  test "parses fraction progress and workshop id aliases" do
-    e = Event.parse(~s({"workshop_id": 123, "progress": 0.42, "status": "downloading"}))
-    assert e.id == "123"
-    assert e.progress == 42.0
-    assert e.status == "downloading"
+  test "parses a typed item milestone event" do
+    e =
+      Event.parse(
+        ~s({"type":"item","id":450814997,"title":"CBA_A3","status":"downloaded","bytes":4840892})
+      )
+
+    assert e.type == "item"
+    assert e.data["id"] == 450_814_997
+    assert e.data["title"] == "CBA_A3"
+    assert e.data["status"] == "downloaded"
   end
 
-  test "parses percentage progress and clamps" do
-    e = Event.parse(~s({"id": "5", "percent": 150}))
-    assert e.progress == 100.0
+  test "parses depots_selected for the server app" do
+    e = Event.parse(~s({"type":"depots_selected","bytes":5384415733,"count":2,"depots":[233781]}))
+    assert e.type == "depots_selected"
+    assert e.data["bytes"] == 5_384_415_733
+    assert e.data["count"] == 2
   end
 
-  test "non-JSON lines become plain message events" do
-    e = Event.parse("Update state (0x61) downloading")
-    assert e.id == nil
-    assert e.message == "Update state (0x61) downloading"
-    assert e.raw == "Update state (0x61) downloading"
+  test "JSON without a type is unknown" do
+    assert Event.parse(~s({"foo":1})).type == "unknown"
+  end
+
+  test "non-JSON lines become log events keeping the raw text" do
+    e = Event.parse("WARN could not persist refresh token")
+    assert e.type == "log"
+    assert e.raw == "WARN could not persist refresh token"
   end
 end

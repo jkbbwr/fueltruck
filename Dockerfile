@@ -11,7 +11,9 @@ ARG ELIXIR_VERSION=1.17.3
 ARG OTP_VERSION=27.1.2
 ARG DEBIAN_VERSION=bookworm-20241016-slim
 ARG BUILDER_IMAGE="hexpm/elixir:${ELIXIR_VERSION}-erlang-${OTP_VERSION}-debian-${DEBIAN_VERSION}"
-ARG RUNNER_IMAGE="debian:${DEBIAN_VERSION}"
+# Runtime uses a newer glibc (trixie, 2.41) so the steamree binary (needs GLIBC_2.38)
+# runs. The ERTS built on bookworm (2.36) is forward-compatible with newer glibc.
+ARG RUNNER_IMAGE="debian:trixie-slim"
 
 FROM ${BUILDER_IMAGE} AS builder
 
@@ -33,8 +35,10 @@ COPY priv priv
 COPY lib lib
 COPY assets assets
 
-RUN mix assets.deploy
+# Compile first so the LiveView colocated hooks/CSS
+# (phoenix-colocated/fueltruck/colocated.css) exist before tailwind/esbuild bundle.
 RUN mix compile
+RUN mix assets.deploy
 
 COPY config/runtime.exs config/
 RUN mix release
@@ -43,14 +47,19 @@ RUN mix release
 FROM ${RUNNER_IMAGE}
 
 RUN apt-get update -y \
-    && apt-get install -y libstdc++6 openssl libncurses6 locales ca-certificates dumb-init \
+    && apt-get install -y libstdc++6 openssl libncurses6 locales ca-certificates dumb-init util-linux \
     && apt-get clean && rm -f /var/lib/apt/lists/*_*
 
 RUN sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen && locale-gen
 ENV LANG=en_US.UTF-8 LANGUAGE=en_US:en LC_ALL=en_US.UTF-8
 
+# Run as a normal user (not `nobody`): the Arma server's Steam integration segfaults
+# under uid 65534. Home is the /data volume so Steam's getpwuid() home is writable.
+RUN groupadd -g 1000 arma \
+    && useradd -u 1000 -g 1000 -d /data/home -s /bin/bash arma
+
 WORKDIR /app
-RUN chown nobody /app
+RUN chown arma:arma /app
 
 # Persistent volume: server install, workshop store, deploys, backups, logs, sqlite db.
 ENV FUELTRUCK_DATA_DIR="/data" \
@@ -59,14 +68,19 @@ ENV FUELTRUCK_DATA_DIR="/data" \
     PHX_SERVER="true" \
     MIX_ENV="prod"
 
-RUN mkdir -p /data && chown nobody /data
+RUN mkdir -p /data && chown arma:arma /data
 VOLUME /data
 
-COPY --from=builder --chown=nobody:root /app/_build/prod/rel/fueltruck ./
+# steamree downloader (Linux x86-64 glibc — matches this runtime, hence non-alpine).
+COPY steamree /usr/local/bin/steamree
+RUN chmod 0755 /usr/local/bin/steamree
 
-USER nobody
+COPY --from=builder --chown=arma:arma /app/_build/prod/rel/fueltruck ./
+COPY --chown=root:root entrypoint.sh /app/entrypoint.sh
+RUN chmod 0755 /app/entrypoint.sh
+
 EXPOSE 4000
 
-# dumb-init is PID1: reaps zombies from spawned arma/HC processes and forwards signals.
-ENTRYPOINT ["/usr/bin/dumb-init", "--"]
-CMD ["/app/bin/fueltruck", "start"]
+# dumb-init is PID1 (reaps zombies from spawned arma/HC processes, forwards signals).
+# entrypoint.sh runs as root to prep the volume, then drops to `arma` for the release.
+ENTRYPOINT ["/usr/bin/dumb-init", "--", "/app/entrypoint.sh"]

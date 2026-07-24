@@ -80,11 +80,22 @@ if config_env() == :prod do
       """
 
   host = System.get_env("PHX_HOST") || "example.com"
+  port = String.to_integer(System.get_env("PORT", "4000"))
+
+  # LAN/self-hosted access: PHX_CHECK_ORIGIN=false disables origin checks so LiveView
+  # connects when reached by IP; or pass a comma-separated allowlist.
+  check_origin =
+    case System.get_env("PHX_CHECK_ORIGIN") do
+      "false" -> false
+      nil -> true
+      list -> String.split(list, ",", trim: true)
+    end
 
   config :fueltruck, :dns_cluster_query, System.get_env("DNS_CLUSTER_QUERY")
 
   config :fueltruck, FueltruckWeb.Endpoint,
-    url: [host: host, port: 443, scheme: "https"],
+    url: [host: host, port: port, scheme: System.get_env("PHX_SCHEME", "http")],
+    check_origin: check_origin,
     http: [
       # Enable IPv6 and bind on all interfaces.
       # Set it to  {0, 0, 0, 0, 0, 0, 0, 1} for local network only access.

@@ -1,15 +1,15 @@
 defmodule Fueltruck.Downloads.Steamree do
   @moduledoc """
-  Adapter for the external `steamree` downloader — the single integration point for
-  its command line. steamree manages its own parallelism and update checking; we hand
-  it what to fetch and consume its JSON event stream.
+  Adapter for the external `steamree` downloader.
 
-  The exact flags are centralized here (and overridable via config) so they can be
-  adjusted when the binary lands without touching the queue.
+      steamree app <APP_ID> --json -o <root>        # install/update an app (233780 = server)
+      steamree app <APP_ID> --branch creatordlc …   # Creator DLC server data
+      steamree download <IDS…> --json -o <root>     # workshop items
 
-      config :fueltruck, Fueltruck.Downloads,
-        steamree_bin: "/opt/steamree/steamree",
-        steamree_extra_args: ["--login", "anonymous"]
+  `-o <root>` is the content root: apps land in `<root>/<appid>`, workshop items in
+  `<root>/<appid>/<pubfileid>` — matching `Fueltruck.Storage` paths. `--json` emits a
+  JSON Lines stream on stdout (progress/logs stay on stderr). Extra args (e.g.
+  `--user <name>` for auth, or `STEAM_USERNAME` in the env) come from config.
   """
   alias Fueltruck.Storage
 
@@ -26,34 +26,39 @@ defmodule Fueltruck.Downloads.Steamree do
     |> Keyword.get(:steamree_extra_args, [])
   end
 
-  @doc "Argv to install/update the dedicated server."
+  @doc """
+  Argv to install/update the dedicated server on the `creatordlc` branch — the full
+  Creator DLC Build (base server + CDLC server data), which is the only branch we run.
+  """
   def server_argv do
     args =
       [
         "app",
-        "--appid",
         Integer.to_string(@server_app_id),
-        "--dir",
-        Storage.server_dir(),
-        "--json"
+        "--branch",
+        "creatordlc",
+        "--json",
+        "-o",
+        Storage.steam_root()
       ] ++ extra_args()
 
     {bin(), args}
   end
 
-  @doc "Argv to install/update a set of workshop mods (checks + updates)."
+  @doc "Argv to install/update a set of workshop mods by published-file id."
   def mods_argv(workshop_ids) do
     ids = Enum.map(workshop_ids, &to_string/1)
 
     args =
       [
-        "workshop",
-        "--appid",
-        Integer.to_string(@workshop_app_id),
-        "--dir",
-        Storage.workshop_dir(),
-        "--json"
-      ] ++ extra_args() ++ ids
+        "download",
+        "--json",
+        "-o",
+        Storage.steam_root(),
+        "--app",
+        Integer.to_string(@workshop_app_id)
+      ] ++
+        extra_args() ++ ids
 
     {bin(), args}
   end

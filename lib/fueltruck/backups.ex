@@ -22,7 +22,7 @@ defmodule Fueltruck.Backups do
   there is simply nothing to back up yet.
   """
   def create(%Deploy{} = deploy, reason \\ "manual") do
-    profile = Storage.profile_dir(deploy.profile_name)
+    profile = Storage.profile_dir(deploy.slug, deploy.profile_name)
 
     if File.dir?(profile) do
       dest_dir = Storage.backups_dir(deploy.slug)

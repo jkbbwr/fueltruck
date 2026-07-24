@@ -43,3 +43,9 @@ npm-debug.log
 /priv/data/
 /priv/data_test/
 
+
+# Local secrets (never commit)
+.env
+.env.*
+# Local deploy helper — contains a LAN IP, deliberately not committed.
+fetch.sh

@@ -21,7 +21,11 @@ defmodule FueltruckWeb.DashboardLive do
       socket
       |> assign(:active, :dashboard)
       |> assign(:page_title, "Dashboard")
+      |> assign(:start_error, nil)
+      |> assign(:active_deploy, nil)
+      |> assign(:active_hcs, [])
       |> assign(:status, Arma.status())
+      |> remember()
       |> assign(:deploys, Deploys.list_deploys())
       |> assign(:metrics, %{procs: %{}, system: %{}})
       |> assign(:history, %{})
@@ -36,7 +40,7 @@ defmodule FueltruckWeb.DashboardLive do
 
   @impl true
   def handle_info({:proc_status, _source, _status}, socket) do
-    {:noreply, socket |> assign(:status, Arma.status()) |> sync_log_subs()}
+    {:noreply, socket |> assign(:status, Arma.status()) |> remember() |> sync_log_subs()}
   end
 
   def handle_info({:metrics, payload}, socket) do
@@ -54,6 +58,11 @@ defmodule FueltruckWeb.DashboardLive do
     {:noreply, assign(socket, :download, snap)}
   end
 
+  def handle_info({:download_done, info}, socket) do
+    {level, msg} = Downloads.done_message(info)
+    {:noreply, put_flash(socket, level, msg)}
+  end
+
   def handle_info(_msg, socket), do: {:noreply, socket}
 
   ## Events
@@ -62,17 +71,24 @@ defmodule FueltruckWeb.DashboardLive do
   def handle_event("start", %{"id" => id}, socket) do
     deploy = Deploys.get_deploy!(id)
 
-    socket =
-      case Arma.start_deploy(deploy) do
-        :ok -> put_flash(socket, :info, "Starting #{deploy.name}…")
-        {:error, reason} -> put_flash(socket, :error, "Start failed: #{inspect(reason)}")
-      end
+    case safe_start_deploy(deploy) do
+      :ok ->
+        {:noreply, socket |> put_flash(:info, "Starting #{deploy.name}…") |> refresh()}
 
-    {:noreply, refresh(socket)}
+      {:error, reason} ->
+        {:noreply, assign(socket, :start_error, Arma.format_error(reason))}
+    end
+  end
+
+  def handle_event("dismiss_error", _p, socket), do: {:noreply, assign(socket, :start_error, nil)}
+
+  def handle_event("clear_active", _p, socket) do
+    {:noreply, socket |> assign(:active_deploy, nil) |> assign(:active_hcs, [])}
   end
 
   def handle_event("stop", _params, socket) do
     Arma.stop_deploy()
+    # Stay on the current page — just update it in place.
     {:noreply, socket |> put_flash(:info, "Stopping deploy…") |> refresh()}
   end
 
@@ -114,17 +130,25 @@ defmodule FueltruckWeb.DashboardLive do
   def render(assigns) do
     ~H"""
     <Layouts.app flash={@flash} active={@active}>
+      <.error_modal :if={@start_error} title="Couldn't start deploy" message={@start_error} />
       <div class="space-y-6">
-        <.control_bar status={@status} deploys={@deploys} />
+        <.control_bar status={@status} deploys={@deploys} active_deploy={@active_deploy} />
         <.download_banner :if={@download.status == :running} download={@download} />
         <.system_strip system={@metrics.system} />
 
-        <%= if @status.phase == :idle do %>
-          <.idle_panel deploys={@deploys} />
-        <% else %>
-          <.process_grid status={@status} metrics={@metrics} history={@history} />
-          <.logs_section status={@status} />
+        <%= cond do %>
+          <% @status.phase != :idle -> %>
+            <.process_grid status={@status} metrics={@metrics} history={@history} />
+          <% @active_deploy != nil -> %>
+            <.stopped_banner deploy={@active_deploy} />
+          <% true -> %>
+            <.idle_panel deploys={@deploys} />
         <% end %>
+
+        <%!-- Rendered OUTSIDE the cond, at a fixed DOM slot, so the log panels keep
+              the same ancestry across the running→stopped flip. Their captured lines
+              (phx-update="ignore") stay on screen — that's the whole point of Stop. --%>
+        <.logs_section :if={@active_deploy != nil} hcs={@active_hcs} />
       </div>
     </Layouts.app>
     """
@@ -134,6 +158,7 @@ defmodule FueltruckWeb.DashboardLive do
 
   attr :status, :map, required: true
   attr :deploys, :list, required: true
+  attr :active_deploy, :map, default: nil
 
   defp control_bar(assigns) do
     ~H"""
@@ -142,35 +167,59 @@ defmodule FueltruckWeb.DashboardLive do
         <div>
           <div class="text-xs uppercase tracking-wide text-base-content/50">Active deploy</div>
           <div class="text-lg font-bold">
-            {(@status.deploy && @status.deploy.name) || "None running"}
+            {(@active_deploy && @active_deploy.name) || "None running"}
           </div>
         </div>
         <.status_badge state={phase_state(@status.phase)} />
       </div>
 
       <div class="flex items-center gap-2">
-        <%= if @status.phase == :idle do %>
-          <form phx-submit="start" id="dashboard-start-form" class="flex items-center gap-2">
-            <select
-              name="id"
-              class="rounded-lg border border-base-300 bg-base-100 px-3 py-1.5 text-sm"
-              required
-            >
-              <option value="" disabled selected>Select a deploy…</option>
-              <option :for={d <- @deploys} value={d.id}>{d.name}</option>
-            </select>
-            <button class="ft-btn-success">
+        <%= cond do %>
+          <% @status.phase != :idle -> %>
+            <button phx-click="restart_deploy" class="ft-btn-ghost">
+              <.icon name="hero-arrow-path" class="size-4" /> Restart all
+            </button>
+            <button phx-click="stop" data-confirm="Stop the active deploy?" class="ft-btn-error">
+              <.icon name="hero-stop" class="size-4" /> Stop
+            </button>
+          <% @active_deploy != nil -> %>
+            <button phx-click="start" phx-value-id={@active_deploy.id} class="ft-btn-success">
               <.icon name="hero-play" class="size-4" /> Start
             </button>
-          </form>
-        <% else %>
-          <button phx-click="restart_deploy" class="ft-btn-ghost">
-            <.icon name="hero-arrow-path" class="size-4" /> Restart all
-          </button>
-          <button phx-click="stop" data-confirm="Stop the active deploy?" class="ft-btn-error">
-            <.icon name="hero-stop" class="size-4" /> Stop
-          </button>
+            <button phx-click="clear_active" class="ft-btn-ghost">Pick another</button>
+          <% true -> %>
+            <form phx-submit="start" id="dashboard-start-form" class="flex items-center gap-2">
+              <select
+                name="id"
+                class="rounded-lg border border-base-300 bg-base-100 px-3 py-1.5 text-sm"
+                required
+              >
+                <option value="" disabled selected>Select a deploy…</option>
+                <option :for={d <- @deploys} value={d.id}>{d.name}</option>
+              </select>
+              <button class="ft-btn-success">
+                <.icon name="hero-play" class="size-4" /> Start
+              </button>
+            </form>
         <% end %>
+      </div>
+    </div>
+    """
+  end
+
+  attr :deploy, :map, required: true
+
+  defp stopped_banner(assigns) do
+    ~H"""
+    <div class="flex flex-wrap items-center gap-3 rounded-xl border border-base-300 bg-base-200/40 px-4 py-2.5 text-sm">
+      <.icon name="hero-stop-circle" class="size-5 text-base-content/50" />
+      <span class="font-medium">{@deploy.name} is stopped</span>
+      <span class="text-base-content/50">— logs below are from the last run</span>
+      <div class="ml-auto flex items-center gap-2">
+        <button phx-click="start" phx-value-id={@deploy.id} class="ft-btn-success">
+          <.icon name="hero-play" class="size-4" /> Start again
+        </button>
+        <button phx-click="clear_active" class="ft-btn-ghost">Pick another</button>
       </div>
     </div>
     """
@@ -183,7 +232,8 @@ defmodule FueltruckWeb.DashboardLive do
     <div class="flex items-center gap-3 rounded-xl border border-info/30 bg-info/10 px-4 py-2.5 text-sm">
       <.icon name="hero-cloud-arrow-down" class="size-5 text-info motion-safe:animate-bounce" />
       <span class="font-medium">Download in progress</span>
-      <span class="text-base-content/60">{@download.job && @download.job.label}</span>
+      <span class="text-base-content/60">{@download.label}</span>
+      <span :if={@download.pct} class="text-base-content/60">· {@download.done}/{@download.total} ({@download.pct}%)</span>
       <.link navigate={~p"/downloads"} class="ml-auto text-info hover:underline">View →</.link>
     </div>
     """
@@ -354,7 +404,7 @@ defmodule FueltruckWeb.DashboardLive do
     """
   end
 
-  attr :status, :map, required: true
+  attr :hcs, :list, default: [], doc: "list of {:hc, n} sources"
 
   defp logs_section(assigns) do
     ~H"""
@@ -370,11 +420,11 @@ defmodule FueltruckWeb.DashboardLive do
 
       <.log_panel source="server" label="Server" height="h-96" />
 
-      <div :if={@status.hcs != []} class="grid gap-3 lg:grid-cols-2">
+      <div :if={@hcs != []} class="grid gap-3 lg:grid-cols-2">
         <.log_panel
-          :for={hc <- @status.hcs}
-          source={Logs.source_key(hc.source)}
-          label={hc.label}
+          :for={source <- @hcs}
+          source={Logs.source_key(source)}
+          label={Logs.source_label(source)}
           height="h-72"
         />
       </div>
@@ -387,8 +437,31 @@ defmodule FueltruckWeb.DashboardLive do
   defp refresh(socket) do
     socket
     |> assign(:status, Arma.status())
+    |> remember()
     |> assign(:deploys, Deploys.list_deploys())
     |> sync_log_subs()
+  end
+
+  # Remember the deploy (and its live HC sources) so a Stop keeps them in view
+  # (stopped) instead of dumping to the picker. The status.deploy map is lean
+  # (id/name/slug) so we capture the HC source list straight from the running
+  # status rather than reconstructing it from the deploy schema.
+  defp remember(socket) do
+    case socket.assigns.status.deploy do
+      nil ->
+        socket
+
+      deploy ->
+        socket
+        |> assign(:active_deploy, deploy)
+        |> assign(:active_hcs, Enum.map(socket.assigns.status.hcs, & &1.source))
+    end
+  end
+
+  defp safe_start_deploy(deploy) do
+    Arma.start_deploy(deploy)
+  catch
+    :exit, reason -> {:error, {:exit, reason}}
   end
 
   # Subscribe/unsubscribe to log topics so we only forward for active sources.

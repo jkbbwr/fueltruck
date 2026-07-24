@@ -195,43 +195,43 @@ defmodule Fueltruck.Arma.Orchestrator do
       Logs.start_collector(:server, run_dir)
       for i <- 0..(hc_count - 1)//1, do: Logs.start_collector({:hc, i}, run_dir)
 
+      started = %{
+        state
+        | phase: :starting,
+          deploy: deploy,
+          plan: plan,
+          run_id: run_id,
+          run_dir: run_dir,
+          log_run: log_run,
+          hc_count: hc_count,
+          server_ready: false,
+          hc_active: false
+      }
+
+      # Steam depots don't preserve the executable bit; ensure the server binary is +x.
+      ensure_executable(Storage.server_binary())
+      # Expose steamclient.so at $HOME/.steam/sdk64 so Arma's Steam init doesn't segfault.
+      Storage.ensure_steam_sdk!()
+
       {exe, args} = CommandLine.server(deploy, plan.mod_paths, plan.server_mod_paths)
       start_managed(:server, {exe, args}, Storage.server_dir())
 
       case ManagedProcess.start(:server) do
         :ok ->
-          {:ok,
-           %{
-             state
-             | phase: :starting,
-               deploy: deploy,
-               plan: plan,
-               run_id: run_id,
-               run_dir: run_dir,
-               log_run: log_run,
-               hc_count: hc_count,
-               server_ready: false,
-               hc_active: false
-           }}
+          {:ok, started}
 
         {:error, reason} ->
           Logger.error("server failed to start: #{inspect(reason)}")
-
-          {:ok,
-           %{
-             state
-             | phase: :running,
-               deploy: deploy,
-               plan: plan,
-               run_id: run_id,
-               run_dir: run_dir,
-               log_run: log_run,
-               hc_count: hc_count
-           }}
+          {:error, reason, do_stop(started)}
       end
     else
       {:error, reason} -> {:error, reason, state}
     end
+  rescue
+    e ->
+      Logger.error("start_deploy crashed: #{Exception.message(e)}")
+      Deploys.clear_active()
+      {:error, e, %{state | phase: :idle}}
   end
 
   defp do_stop(%{deploy: nil} = state), do: %{state | phase: :idle}
@@ -332,6 +332,11 @@ defmodule Fueltruck.Arma.Orchestrator do
       {:error, :not_found} -> %{source: source, label: Logs.source_label(source), state: :stopped}
       status -> status
     end
+  end
+
+  defp ensure_executable(path) do
+    if File.regular?(path), do: File.chmod(path, 0o755)
+    :ok
   end
 
   defp gen_run_id do

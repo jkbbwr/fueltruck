@@ -30,4 +30,20 @@ defmodule Fueltruck.Arma do
   defdelegate restart_server(), to: Orchestrator
   defdelegate restart_hc(index), to: Orchestrator
   defdelegate status(), to: Orchestrator
+
+  @doc "Format a start/lifecycle failure reason into a human-readable message."
+  def format_error(reason) do
+    text = describe(reason)
+
+    if text =~ ~r/enoent|no such file|not found|not_downloaded/i do
+      text <> "\n\nThe Arma server doesn't appear to be installed — run Update server first."
+    else
+      text
+    end
+  end
+
+  defp describe(%{__exception__: true} = e), do: Exception.message(e)
+  defp describe({%{__exception__: true} = e, stack}) when is_list(stack), do: Exception.message(e)
+  defp describe({:exit, reason}), do: "process exited: #{inspect(reason, pretty: true)}"
+  defp describe(reason), do: inspect(reason, pretty: true)
 end

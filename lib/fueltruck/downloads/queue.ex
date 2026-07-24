@@ -1,8 +1,12 @@
 defmodule Fueltruck.Downloads.Queue do
   @moduledoc """
-  Serializes steamree invocations (Steam locks forbid concurrent runs), streams their
-  JSON output as normalized progress, and runs post-download hooks (lowercasing +
-  catalog upsert). One job runs at a time; further requests queue.
+  Serializes steamree invocations (Steam locks forbid concurrent runs), tracks progress
+  from its JSON milestone events, and runs post-download hooks (lowercasing + catalog
+  upsert). One job runs at a time; further requests queue.
+
+  steamree only reports per-item *completion* on stdout (no continuous byte progress),
+  so the derived state is: overall `done/total` counts + per-item status
+  (`queued → downloading → done`), plus server depot totals.
   """
   use GenServer
   require Logger
@@ -21,7 +25,7 @@ defmodule Fueltruck.Downloads.Queue do
   def topic, do: @topic
   def subscribe, do: Phoenix.PubSub.subscribe(Fueltruck.PubSub, @topic)
 
-  @doc "Queue a server install/update."
+  @doc "Queue a server install/update (Creator DLC build)."
   def update_server, do: GenServer.call(__MODULE__, {:enqueue, %{type: :server, label: "Server"}})
 
   @doc "Queue a workshop mod update for the given ids. `:names` maps id → display name."
@@ -37,24 +41,65 @@ defmodule Fueltruck.Downloads.Queue do
   @doc "Current snapshot of the download state."
   def get, do: GenServer.call(__MODULE__, :get)
 
+  @doc """
+  Human `{level, message}` for a `{:download_done, info}` completion event, e.g.
+  all-up-to-date vs how many were downloaded/failed.
+  """
+  def done_message(%{result: :cancelled}), do: {:info, "Download cancelled"}
+  def done_message(%{result: {:error, _}}), do: {:error, "Download failed to start"}
+
+  def done_message(%{kind: :mods, summary: s} = info) when is_map(s) do
+    dl = s["downloaded"] || 0
+    failed = s["failed"] || 0
+    un = (info[:unavailable] || 0) + failed
+
+    cond do
+      dl == 0 and un == 0 -> {:info, "All mods are already up to date"}
+      un > 0 -> {:error, mods_line(dl, un)}
+      true -> {:info, "Downloaded #{dl} mod(s)"}
+    end
+  end
+
+  def done_message(%{kind: :mods}), do: {:info, "Mod download finished"}
+  def done_message(%{kind: :server, summary: %{"downloaded" => 0}}), do: {:info, "Server is up to date"}
+  def done_message(%{kind: :server}), do: {:info, "Server download finished"}
+  def done_message(_), do: {:info, "Download complete"}
+
+  defp mods_line(0, un), do: "#{un} mod(s) unavailable (removed / hidden / wrong id)"
+
+  defp mods_line(dl, un),
+    do: "Downloaded #{dl} mod(s); #{un} unavailable (removed / hidden / wrong id)"
+
   ## Server
 
   @impl true
   def init(_opts) do
     {:ok,
-     %{
-       status: :idle,
-       job: nil,
+     reset(%{
        queue: [],
        daemon_pid: nil,
        ref: nil,
-       cancelling: false,
-       items: %{},
        log: [],
        last_result: nil,
        dirty: false,
        flush_scheduled: false
-     }}
+     })}
+  end
+
+  # Per-job fields reset between jobs.
+  defp reset(state) do
+    Map.merge(state, %{
+      status: :idle,
+      job: nil,
+      cancelling: false,
+      items: %{},
+      depots: %{},
+      phase: nil,
+      total_bytes: nil,
+      server: nil,
+      summary: nil,
+      unavailable: 0
+    })
   end
 
   @impl true
@@ -89,10 +134,12 @@ defmodule Fueltruck.Downloads.Queue do
 
   @impl true
   def handle_cast({:line, line}, state) do
-    event = Event.parse(line)
-    items = update_items(state.items, event)
-    log = [line | state.log] |> Enum.take(@log_cap)
-    {:noreply, mark_dirty(%{state | items: items, log: log})}
+    state =
+      state
+      |> apply_event(Event.parse(line))
+      |> Map.update!(:log, fn log -> [line | log] |> Enum.take(@log_cap) end)
+
+    {:noreply, mark_dirty(state)}
   end
 
   @impl true
@@ -117,13 +164,115 @@ defmodule Fueltruck.Downloads.Queue do
 
     Logger.info("download job #{inspect(state.job[:type])} finished: #{inspect(result)}")
 
+    Phoenix.PubSub.broadcast(
+      Fueltruck.PubSub,
+      @topic,
+      {:download_done,
+       %{
+         kind: state.job[:type],
+         result: result,
+         summary: state.summary,
+         unavailable: state.unavailable
+       }}
+    )
+
     state = %{state | daemon_pid: nil, ref: nil, cancelling: false, last_result: result}
     {:noreply, next_job(state)}
   end
 
   def handle_info(_msg, state), do: {:noreply, state}
 
-  ## Internals
+  ## Event handling — see Fueltruck.Downloads.Event for the shapes.
+
+  defp apply_event(state, %{type: "app", data: d}) do
+    %{
+      state
+      | server: %{name: d["name"], branch: d["branch"], total_bytes: nil, depots: nil},
+        phase: :resolving
+    }
+  end
+
+  defp apply_event(state, %{type: "depots_selected", data: d}) do
+    server = Map.merge(state.server || %{}, %{total_bytes: d["bytes"], depots: d["count"]})
+    %{state | server: server, total_bytes: d["bytes"], phase: :downloading}
+  end
+
+  defp apply_event(state, %{type: "resolved", data: d}) do
+    %{
+      state
+      | total_bytes: d["bytes"],
+        phase: :downloading,
+        items: start_all(state.items),
+        unavailable: d["unavailable"] || state.unavailable
+    }
+  end
+
+  # A workshop item finishing — either downloaded, or unavailable (removed/hidden/bad id).
+  # The count comes from the authoritative `resolved.unavailable`; here we just tag the
+  # item so it renders distinctly.
+  defp apply_event(state, %{type: "item", data: %{"status" => "unavailable"} = d}) do
+    %{state | items: mark_item(state.items, d, "unavailable")}
+  end
+
+  defp apply_event(state, %{type: "item", data: d}) do
+    %{state | items: mark_item(state.items, d, "done")}
+  end
+
+  # Throttled per-workshop-item progress: {id, completed_bytes, total_bytes}.
+  defp apply_event(state, %{type: "item_progress", data: d}) do
+    %{state | items: put_progress(state.items, d), phase: :downloading}
+  end
+
+  # Throttled per-depot progress for app/server downloads: {depot, completed_bytes, total_bytes}.
+  defp apply_event(state, %{type: "depot_progress", data: d}) do
+    entry = %{completed: d["completed_bytes"] || 0, total: d["total_bytes"] || 0}
+    %{state | depots: Map.put(state.depots, d["depot"], entry), phase: :downloading}
+  end
+
+  defp apply_event(state, %{type: "summary", data: d}) do
+    %{state | phase: :done, summary: d, last_result: {:summary, d}}
+  end
+
+  defp apply_event(state, _event), do: state
+
+  defp start_all(items) do
+    Map.new(items, fn {id, item} ->
+      {id, if(item.status == "queued", do: %{item | status: "downloading"}, else: item)}
+    end)
+  end
+
+  defp put_progress(items, d) do
+    id = to_string(d["id"])
+    prev = Map.get(items, id, blank_item(id, "mod-#{id}"))
+    status = if prev.status == "done", do: "done", else: "downloading"
+
+    Map.put(items, id, %{
+      prev
+      | completed_bytes: d["completed_bytes"] || prev.completed_bytes,
+        total_bytes: max(d["total_bytes"] || 0, prev.total_bytes),
+        status: status
+    })
+  end
+
+  defp mark_item(items, d, status) do
+    id = to_string(d["id"])
+    prev = Map.get(items, id, blank_item(id, d["title"] || "mod-#{id}"))
+    total = d["bytes"] || prev.total_bytes
+    completed = if status == "done", do: total, else: prev.completed_bytes
+
+    Map.put(items, id, %{
+      prev
+      | status: status,
+        completed_bytes: completed,
+        total_bytes: total,
+        name: d["title"] || prev.name
+    })
+  end
+
+  defp blank_item(id, name),
+    do: %{id: id, name: name, status: "queued", completed_bytes: 0, total_bytes: 0}
+
+  ## Job lifecycle
 
   defp start_job(job, state) do
     {exe, args} = argv(job)
@@ -135,17 +284,17 @@ defmodule Fueltruck.Downloads.Queue do
         Process.unlink(pid)
         ref = Process.monitor(pid)
 
-        state = %{
-          state
-          | status: :running,
+        state =
+          reset(state)
+          |> Map.merge(%{
+            status: :running,
             job: job,
             daemon_pid: pid,
             ref: ref,
-            cancelling: false,
             items: seed_items(job),
             log: [],
             last_result: nil
-        }
+          })
 
         broadcast(state)
         state
@@ -159,7 +308,13 @@ defmodule Fueltruck.Downloads.Queue do
   end
 
   defp safe_start(exe, args, logger_fun) do
-    MuonTrap.Daemon.start_link(exe, args, stderr_to_stdout: true, logger_fun: logger_fun)
+    # Run with cwd = data root so steamree reads the persistent `.env` (Steam creds)
+    # and caches its session on the volume. `--json` puts machine-readable JSON Lines
+    # on stdout and human progress on stderr; capture stdout only for the parser.
+    MuonTrap.Daemon.start_link(exe, args,
+      logger_fun: logger_fun,
+      cd: Fueltruck.Storage.data_dir()
+    )
   rescue
     e -> {:error, e}
   end
@@ -168,59 +323,23 @@ defmodule Fueltruck.Downloads.Queue do
   defp argv(%{type: :mods, ids: ids}), do: Steamree.mods_argv(ids)
 
   defp seed_items(%{type: :mods, ids: ids, names: names}) do
-    Map.new(ids, fn id ->
-      {id,
-       %{
-         id: id,
-         name: Map.get(names, id, "mod-#{id}"),
-         progress: 0.0,
-         status: "queued",
-         message: nil
-       }}
-    end)
+    Map.new(ids, fn id -> {id, blank_item(id, Map.get(names, id, "mod-#{id}"))} end)
   end
 
   defp seed_items(_), do: %{}
 
-  defp update_items(items, %{id: nil}), do: items
-
-  defp update_items(items, event) do
-    existing =
-      Map.get(items, event.id, %{
-        id: event.id,
-        name: "mod-#{event.id}",
-        progress: nil,
-        status: nil,
-        message: nil
-      })
-
-    updated =
-      existing
-      |> maybe_put(:progress, event.progress)
-      |> maybe_put(:status, event.status)
-      |> maybe_put(:message, event.message)
-
-    Map.put(items, event.id, updated)
-  end
-
-  defp maybe_put(map, _key, nil), do: map
-  defp maybe_put(map, key, value), do: Map.put(map, key, value)
-
+  # Best-effort: finalize the mods that made it to disk; unavailable ones (never
+  # downloaded) are surfaced via item status + the completion notice, not as an error.
   defp finalize(%{type: :mods, ids: ids, names: names}) do
-    results =
-      Enum.map(ids, fn id ->
-        {id, Store.finalize(id, name: Map.get(names, id))}
-      end)
-
-    failures = Enum.filter(results, fn {_id, r} -> match?({:error, _}, r) end)
-    if failures == [], do: :ok, else: {:partial, failures}
+    Enum.each(ids, fn id -> Store.finalize(id, name: Map.get(names, id)) end)
+    :ok
   end
 
   defp finalize(%{type: :server}), do: :ok
   defp finalize(_), do: :ok
 
   defp next_job(%{queue: []} = state) do
-    state = %{state | status: :idle, job: nil}
+    state = reset(state)
     broadcast(state)
     state
   end
@@ -228,6 +347,8 @@ defmodule Fueltruck.Downloads.Queue do
   defp next_job(%{queue: [job | rest]} = state) do
     start_job(job, %{state | queue: rest})
   end
+
+  ## Broadcast + snapshot
 
   defp mark_dirty(state) do
     if state.flush_scheduled do
@@ -243,13 +364,56 @@ defmodule Fueltruck.Downloads.Queue do
   end
 
   defp snapshot(state) do
+    # In-progress at the top, finished sink to the bottom; name breaks ties.
+    items = state.items |> Map.values() |> Enum.sort_by(&{status_rank(&1.status), &1.name})
+    total = length(items)
+    done = Enum.count(items, &(&1.status == "done"))
+    {completed_bytes, summed_total} = overall_bytes(state)
+    total_bytes = state.total_bytes || pos(summed_total)
+
     %{
       status: state.status,
-      job: state.job,
+      kind: state.job && state.job.type,
+      label: state.job && state.job.label,
       queue: Enum.map(state.queue, & &1.label),
-      items: state.items |> Map.values() |> Enum.sort_by(& &1.id),
-      log: Enum.reverse(state.log),
-      last_result: state.last_result
+      phase: state.phase,
+      total_bytes: total_bytes,
+      bytes_done: completed_bytes,
+      bytes_pct: pct(completed_bytes, total_bytes),
+      depots: map_size(state.depots),
+      server: state.server,
+      items: items,
+      total: total,
+      done: done,
+      pct: if(total > 0, do: round(done / total * 100), else: nil),
+      last_result: state.last_result,
+      log: Enum.reverse(state.log)
     }
   end
+
+  # Overall bytes downloaded / total, summed across depots (server) or items (mods).
+  defp overall_bytes(%{depots: depots}) when map_size(depots) > 0 do
+    Enum.reduce(depots, {0, 0}, fn {_, %{completed: c, total: t}}, {ac, at} -> {ac + c, at + t} end)
+  end
+
+  defp overall_bytes(%{items: items}) when map_size(items) > 0 do
+    Enum.reduce(items, {0, 0}, fn {_, i}, {ac, at} ->
+      {ac + (i.completed_bytes || 0), at + (i.total_bytes || 0)}
+    end)
+  end
+
+  defp overall_bytes(_), do: {0, 0}
+
+  defp pos(n) when is_integer(n) and n > 0, do: n
+  defp pos(_), do: nil
+
+  defp pct(c, t) when is_integer(c) and is_integer(t) and t > 0, do: min(100, round(c / t * 100))
+  defp pct(_c, _t), do: nil
+
+  defp status_rank("downloading"), do: 0
+  defp status_rank("queued"), do: 1
+  defp status_rank("unavailable"), do: 2
+  defp status_rank("failed"), do: 2
+  defp status_rank("done"), do: 3
+  defp status_rank(_), do: 4
 end
