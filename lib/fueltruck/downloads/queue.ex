@@ -308,9 +308,11 @@ defmodule Fueltruck.Downloads.Queue do
   end
 
   defp safe_start(exe, args, logger_fun) do
-    # Run with cwd = data root so steamree reads the persistent `.env` (Steam creds)
-    # and caches its session on the volume. `--json` puts machine-readable JSON Lines
-    # on stdout and human progress on stderr; capture stdout only for the parser.
+    # No env override, so steamree inherits our environment — it reads Steam creds from
+    # STEAM_USERNAME/STEAM_PASSWORD there (e.g. set in compose) or from a `.env` in its
+    # cwd. cwd = data root so a persistent `.env` and its session cache live on the
+    # volume. `--json` puts machine-readable JSON Lines on stdout and human progress on
+    # stderr; capture stdout only for the parser.
     MuonTrap.Daemon.start_link(exe, args,
       logger_fun: logger_fun,
       cd: Fueltruck.Storage.data_dir()
