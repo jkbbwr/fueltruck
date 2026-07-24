@@ -364,8 +364,10 @@ defmodule Fueltruck.Downloads.Queue do
   end
 
   defp snapshot(state) do
-    # In-progress at the top, finished sink to the bottom; name breaks ties.
-    items = state.items |> Map.values() |> Enum.sort_by(&{status_rank(&1.status), &1.name})
+    # Actively downloading (has a size/progress) at the top, then those still waiting to
+    # start (steamree marks the whole batch "downloading" but only runs `--jobs` at a
+    # time), then failures, with finished items sinking to the bottom; name breaks ties.
+    items = state.items |> Map.values() |> Enum.sort_by(&{item_rank(&1), &1.name})
     total = length(items)
     done = Enum.count(items, &(&1.status == "done"))
     {completed_bytes, summed_total} = overall_bytes(state)
@@ -410,10 +412,11 @@ defmodule Fueltruck.Downloads.Queue do
   defp pct(c, t) when is_integer(c) and is_integer(t) and t > 0, do: min(100, round(c / t * 100))
   defp pct(_c, _t), do: nil
 
-  defp status_rank("downloading"), do: 0
-  defp status_rank("queued"), do: 1
-  defp status_rank("unavailable"), do: 2
-  defp status_rank("failed"), do: 2
-  defp status_rank("done"), do: 3
-  defp status_rank(_), do: 4
+  # Rank an item for display order. A known size (`total_bytes > 0`) means steamree is
+  # actually working on it, so it ranks above items merely marked "downloading" but not
+  # yet started (waiting). Done sinks to the bottom.
+  defp item_rank(%{status: "done"}), do: 3
+  defp item_rank(%{status: s}) when s in ["unavailable", "failed"], do: 2
+  defp item_rank(%{total_bytes: t}) when is_integer(t) and t > 0, do: 0
+  defp item_rank(_), do: 1
 end

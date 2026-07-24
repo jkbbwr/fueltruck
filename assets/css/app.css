@@ -285,6 +285,13 @@
   background: var(--color-primary);
   animation: ft-indeterminate 1.15s ease-in-out infinite;
 }
+/* Waiting to start: same swipe as indeterminate but 50% slower and dimmed. */
+.ft-bar-waiting {
+  width: 35%;
+  background: var(--color-primary);
+  opacity: 0.45;
+  animation: ft-indeterminate 2.3s ease-in-out infinite;
+}
 @keyframes ft-indeterminate {
   0% {
     margin-left: -35%;

@@ -413,8 +413,8 @@ defmodule FueltruckWeb.DashboardComponents do
   defp item_bar_class(%{status: "done"}), do: "ft-bar-done"
   defp item_bar_class(%{status: s}) when s in ["failed", "unavailable"], do: "ft-bar-failed"
   defp item_bar_class(%{total_bytes: t}) when is_integer(t) and t > 0, do: "ft-bar-active"
-  defp item_bar_class(%{status: "downloading"}), do: "ft-bar-indeterminate"
-  defp item_bar_class(_), do: "ft-bar-queued"
+  # Marked downloading/queued but no size yet = waiting to start: a slower, dimmer swipe.
+  defp item_bar_class(_), do: "ft-bar-waiting"
 
   defp item_bar_style(%{status: s}) when s in ["done", "failed", "unavailable"], do: nil
 
@@ -432,10 +432,10 @@ defmodule FueltruckWeb.DashboardComponents do
        when is_integer(t) and t > 0,
        do: "#{humanize_bytes(c)} / #{humanize_bytes(t)}"
 
-  defp item_label(%{status: "downloading"}), do: "downloading…"
   defp item_label(%{status: "failed"}), do: "failed"
   defp item_label(%{status: "unavailable"}), do: "unavailable"
-  defp item_label(_), do: "queued"
+  # No size yet (downloading-but-unstarted or queued) reads as waiting.
+  defp item_label(_), do: "waiting…"
 
   defp phase_label(:resolving), do: "Resolving depots…"
   defp phase_label(:downloading), do: "Downloading…"

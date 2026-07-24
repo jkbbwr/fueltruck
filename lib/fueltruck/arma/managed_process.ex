@@ -25,7 +25,10 @@ defmodule Fueltruck.Arma.ManagedProcess do
   @default_backoff_base 1_000
   @default_backoff_cap 60_000
   @default_stable_ms 60_000
-  @default_readiness ~r/Host identity created|Dedicated host created|Game Port:/
+  # Server prints "Host identity created" / "Dedicated host created"; a headless client
+  # prints "Dedicated client created" — without the latter, HCs never flip to ready and
+  # show "Starting" forever despite running fine.
+  @default_readiness ~r/Host identity created|Dedicated host created|Dedicated client created|Game Port:/
 
   defstruct [
     :source,
