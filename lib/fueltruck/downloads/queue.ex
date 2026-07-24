@@ -25,8 +25,15 @@ defmodule Fueltruck.Downloads.Queue do
   def topic, do: @topic
   def subscribe, do: Phoenix.PubSub.subscribe(Fueltruck.PubSub, @topic)
 
-  @doc "Queue a server install/update (Creator DLC build)."
-  def update_server, do: GenServer.call(__MODULE__, {:enqueue, %{type: :server, label: "Server"}})
+  @doc """
+  Queue a server install/update. Runs two stages in sequence — the base game (default
+  branch) then the Creator DLC overlay — since the creatordlc branch alone leaves an
+  incomplete core game. A single call updates both.
+  """
+  def update_server do
+    job = %{type: :server, label: server_label(:base), stages: [:base, :creatordlc], stage: 0}
+    GenServer.call(__MODULE__, {:enqueue, job})
+  end
 
   @doc "Queue a workshop mod update for the given ids. `:names` maps id → display name."
   def update_mods(ids, opts \\ []) do
@@ -155,29 +162,38 @@ defmodule Fueltruck.Downloads.Queue do
   end
 
   def handle_info({:DOWN, ref, :process, _pid, reason}, %{ref: ref} = state) do
-    result =
-      cond do
-        state.cancelling -> :cancelled
-        reason == :normal -> finalize(state.job)
-        true -> {:error, reason}
-      end
+    state = %{state | daemon_pid: nil, ref: nil}
 
-    Logger.info("download job #{inspect(state.job[:type])} finished: #{inspect(result)}")
+    if not state.cancelling and reason == :normal and next_server_stage?(state.job) do
+      # Base game finished cleanly — roll straight into the creatordlc overlay without
+      # emitting a completion event (the download isn't done until both stages run).
+      Logger.info("server download stage #{state.job.stage} done; starting next stage")
+      {:noreply, advance_server_stage(state)}
+    else
+      result =
+        cond do
+          state.cancelling -> :cancelled
+          reason == :normal -> finalize(state.job)
+          true -> {:error, reason}
+        end
 
-    Phoenix.PubSub.broadcast(
-      Fueltruck.PubSub,
-      @topic,
-      {:download_done,
-       %{
-         kind: state.job[:type],
-         result: result,
-         summary: state.summary,
-         unavailable: state.unavailable
-       }}
-    )
+      Logger.info("download job #{inspect(state.job[:type])} finished: #{inspect(result)}")
 
-    state = %{state | daemon_pid: nil, ref: nil, cancelling: false, last_result: result}
-    {:noreply, next_job(state)}
+      Phoenix.PubSub.broadcast(
+        Fueltruck.PubSub,
+        @topic,
+        {:download_done,
+         %{
+           kind: state.job[:type],
+           result: result,
+           summary: state.summary,
+           unavailable: state.unavailable
+         }}
+      )
+
+      state = %{state | cancelling: false, last_result: result}
+      {:noreply, next_job(state)}
+    end
   end
 
   def handle_info(_msg, state), do: {:noreply, state}
@@ -321,8 +337,25 @@ defmodule Fueltruck.Downloads.Queue do
     e -> {:error, e}
   end
 
-  defp argv(%{type: :server}), do: Steamree.server_argv()
+  defp argv(%{type: :server} = job), do: Steamree.server_argv(current_stage(job))
   defp argv(%{type: :mods, ids: ids}), do: Steamree.mods_argv(ids)
+
+  defp current_stage(%{stages: stages, stage: i}), do: Enum.at(stages, i)
+  defp current_stage(_), do: :creatordlc
+
+  # A server download runs base then creatordlc; is there another stage after this one?
+  defp next_server_stage?(%{type: :server, stages: stages, stage: i}), do: i + 1 < length(stages)
+  defp next_server_stage?(_), do: false
+
+  defp advance_server_stage(%{job: job} = state) do
+    next = job.stage + 1
+    job = %{job | stage: next, label: server_label(Enum.at(job.stages, next))}
+    start_job(job, state)
+  end
+
+  defp server_label(:base), do: "Server — base game"
+  defp server_label(:creatordlc), do: "Server — Creator DLC"
+  defp server_label(_), do: "Server"
 
   defp seed_items(%{type: :mods, ids: ids, names: names}) do
     Map.new(ids, fn id -> {id, blank_item(id, Map.get(names, id, "mod-#{id}"))} end)

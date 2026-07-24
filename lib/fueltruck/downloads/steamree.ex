@@ -27,23 +27,28 @@ defmodule Fueltruck.Downloads.Steamree do
   end
 
   @doc """
-  Argv to install/update the dedicated server on the `creatordlc` branch — the full
-  Creator DLC Build (base server + CDLC server data), which is the only branch we run.
+  Argv to install/update the dedicated server for a given stage:
+
+    * `:base` — the default branch, i.e. the full base game. The `creatordlc` branch
+      alone ships an inconsistent/incomplete core game (Arma reports the base `A3` mod
+      as `NOT FOUND`), so the base must be installed first.
+    * `:creatordlc` — overlays the free Creator DLC server data on top of the base.
+
+  Both write to the same content root, so the server download runs `:base` then
+  `:creatordlc` in sequence (see `Fueltruck.Downloads.Queue`).
   """
-  def server_argv do
+  def server_argv(stage \\ :creatordlc) do
     args =
-      [
-        "app",
-        Integer.to_string(@server_app_id),
-        "--branch",
-        "creatordlc",
-        "--json",
-        "-o",
-        Storage.steam_root()
-      ] ++ extra_args()
+      ["app", Integer.to_string(@server_app_id)] ++
+        branch_args(stage) ++
+        ["--json", "-o", Storage.steam_root()] ++
+        extra_args()
 
     {bin(), args}
   end
+
+  defp branch_args(:base), do: []
+  defp branch_args(:creatordlc), do: ["--branch", "creatordlc"]
 
   @doc "Argv to install/update a set of workshop mods by published-file id."
   def mods_argv(workshop_ids) do
