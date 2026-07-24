@@ -89,6 +89,12 @@ defmodule Fueltruck.Deploys.Materializer do
         end
       end)
 
+    # Bridge the mods dir into the install dir (cwd) so `-mod` can reference mods
+    # relative to cwd — Arma won't load absolutely-pathed mods (they show as "Empty").
+    bridge = Storage.mods_link(slug)
+    _ = File.rm(bridge)
+    _ = File.ln_s(mods_dir, bridge)
+
     present = fn path -> path not in missing_paths(links, missing) end
 
     {:ok,

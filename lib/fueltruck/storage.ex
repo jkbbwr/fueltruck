@@ -93,6 +93,20 @@ defmodule Fueltruck.Storage do
   def deploy_dir(slug), do: Path.join(deploys_dir(), slug)
 
   @doc """
+  Name of the bridge symlink placed in the install dir (the server's cwd) pointing at a
+  deploy's `mods/`. Arma won't load `-mod` entries given as absolute paths — only paths
+  relative to cwd — and a relative path to the deploy dir would need `..` (which Arma
+  also mangles). So we bridge the mods dir into cwd and reference mods as
+  `<mods_link_name>/@mod` (verified: relative refs load, absolute ones show "Empty").
+  """
+  @spec mods_link_name(String.t()) :: String.t()
+  def mods_link_name(slug), do: "_mods_" <> to_string(slug)
+
+  @doc "Absolute path of the mods bridge symlink (`<install>/<mods_link_name>`)."
+  @spec mods_link(String.t()) :: Path.t()
+  def mods_link(slug), do: Path.join(server_dir(), mods_link_name(slug))
+
+  @doc """
   A deploy's `-profiles=` root: `<deploy_dir>/profiles`. Passing `-profiles` redirects
   Arma's whole profile/save tree here instead of the user's XDG home, so each deploy's
   profile sits next to its config/mods/keys (and inside its backups) rather than in some

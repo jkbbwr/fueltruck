@@ -38,8 +38,8 @@ defmodule Fueltruck.Arma.CommandLine do
         "-profiles=#{rel(Storage.profiles_root(slug))}",
         "-name=#{deploy.profile_name}"
       ]
-      |> maybe_mods("-mod", cdlc_keys(deploy) ++ rel_all(mod_paths))
-      |> maybe_mods("-serverMod", rel_all(server_mod_paths))
+      |> maybe_mods("-mod", cdlc_keys(deploy) ++ mod_refs(deploy, mod_paths))
+      |> maybe_mods("-serverMod", mod_refs(deploy, server_mod_paths))
       |> Kernel.++(tokenize(deploy.extra_server_args))
 
     {Storage.server_binary(), args}
@@ -73,7 +73,7 @@ defmodule Fueltruck.Arma.CommandLine do
         "-profiles=#{rel(Storage.profiles_root(deploy.slug))}",
         "-name=#{hc_profile_name(deploy, n)}"
       ])
-      |> maybe_mods("-mod", cdlc_keys(deploy) ++ rel_all(mod_paths))
+      |> maybe_mods("-mod", cdlc_keys(deploy) ++ mod_refs(deploy, mod_paths))
       |> Kernel.++(tokenize(deploy.extra_hc_args))
 
     {Storage.server_binary(), args}
@@ -98,13 +98,18 @@ defmodule Fueltruck.Arma.CommandLine do
     args ++ ["#{flag}=#{Enum.join(paths, ";")}"]
   end
 
-  # Deploy configs/mods live under /data/deploys, outside the install dir (the process
-  # cwd). Making them relative to the install dir yields `../../deploys/...`, and Arma
-  # mangles `..` in `-config`/`-cfg`/`-mod` paths (it drops the traversal and looks
-  # under cwd, so the file is "not found"). Absolute paths sidestep that entirely.
-  defp rel_all(paths), do: Enum.map(paths, &rel/1)
-
+  # `-config`/`-cfg`/`-profiles` accept absolute paths (deploy configs live under
+  # /data/deploys, outside cwd; a relative `../..` path is mangled by Arma). But `-mod`
+  # is different: Arma will NOT load a mod given by absolute path (it shows "GAME DIR
+  # (Empty)") — mod entries must be relative to cwd. So config-ish paths stay absolute…
   defp rel(path), do: Path.expand(path)
+
+  # …and mods are referenced through the install-dir bridge symlink (see
+  # `Storage.mods_link/1`) as `<bridge>/@mod`, which resolves relative to cwd.
+  defp mod_refs(deploy, paths) do
+    link = Storage.mods_link_name(deploy.slug)
+    Enum.map(paths, fn path -> Path.join(link, Path.basename(path)) end)
+  end
 
   # Enabled Creator DLC folder keys (e.g. "gm", "vn"), loaded like client mods. Their
   # folders sit in the install dir, so the bare key is a valid relative `-mod` entry.
