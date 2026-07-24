@@ -1,0 +1,12 @@
+_build/
+deps/
+*.db
+*.db-*
+/priv/data/
+/priv/data_test/
+/priv/static/assets/
+.git/
+.elixir_ls/
+.formatter.exs
+test/
+tmp/
