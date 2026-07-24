@@ -79,7 +79,11 @@ COPY --from=builder --chown=arma:arma /app/_build/prod/rel/fueltruck ./
 COPY --chown=root:root entrypoint.sh /app/entrypoint.sh
 RUN chmod 0755 /app/entrypoint.sh
 
+# 4000/tcp: web UI. 2302-2306/udp: the Arma dedicated server (game, Steam query,
+# Steam master, VON) for the default -port=2302. EXPOSE is metadata only — the ports
+# must still be published with `docker run -p` (see README) for players to connect.
 EXPOSE 4000
+EXPOSE 2302-2306/udp
 
 # dumb-init is PID1 (reaps zombies from spawned arma/HC processes, forwards signals).
 # entrypoint.sh runs as root to prep the volume, then drops to `arma` for the release.

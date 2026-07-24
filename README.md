@@ -63,9 +63,17 @@ command permissions. Lives under `Fueltruck.Discord`.
 
 ```sh
 docker build -t fueltruck .
-docker run -p 4000:4000 -v fueltruck-data:/data \
+docker run \
+  -p 4000:4000 \
+  -p 2302-2306:2302-2306/udp \
+  -v fueltruck-data:/data \
   -e SECRET_KEY_BASE=$(mix phx.gen.secret) fueltruck
 ```
+
+`4000/tcp` is the web UI; `2302-2306/udp` are the Arma dedicated server ports for the
+default `-port=2302` (game, Steam query, Steam master, VON). Query port `2303` is what
+lists the server in the in-game browser. A deploy configured with a different `-port=P`
+publishes `P`…`P+4/udp` instead — adjust the `-p` range to match.
 
 `dumb-init` is PID1 so orphaned Arma/HC processes are reaped and SIGTERM triggers a
 graceful shutdown (stop deploy → back up profiles → exit). Provide the `steamree`
